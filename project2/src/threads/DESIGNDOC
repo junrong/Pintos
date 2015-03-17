@@ -1,0 +1,260 @@
+			+--------------------+
+			|        CS 140      |
+			| PROJECT 1: THREADS |
+			|   DESIGN DOCUMENT  |
+			+--------------------+
+				   
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Jilin Yan <yanjilin@ccs.neu.edu>
+Junrong Yan <junrong@ccs.neu.edu>
+Wei Luo <luowei@ccs.neu.edu>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+			     ALARM CLOCK
+			     ===========
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+/* New state of thread status for sleeping threads */
+THREAD_SLEEPING;
+
+/* the wake time for thread (= current ticks + ticks) */
+int64_t wake_time;
+
+/* the list of sleeping threads in wake time ascending order */
+static struct list sleeping_list; 
+
+---- ALGORITHMS ----
+
+>> A2: Briefly describe what happens in a call to timer_sleep(),
+>> including the effects of the timer interrupt handler.
+
+# timer_sleep()
+1. calls the thread_sleep() function in thread.c
+# thread_sleep()
+2. disables the interrupt to avoid race conditions
+3. calculates the wake up time for the current thread (current ticks + sleep ticks)
+4. adds the current thread into sleeping list which is in wake_time ascending order
+5. calls schedule() in thread.c
+# schedule()
+6. traverses the sleeping list, if a thread's wake up time is less than current ticks,
+   remove it from the beginning of sleeping list and insert it into ready list, and set
+   it thread status to THREAD_READY. Otherwise, just break the loop since sleeping list
+   is in wake up time ascending order.
+
+
+>> A3: What steps are taken to minimize the amount of time spent in
+>> the timer interrupt handler?
+
+# thread_sleep()
+In this function, we will calculate the wake time for a thread firstly, and then add it
+into sleeping list which is in wake up time ascending order. In worst case, the running
+time is O(n).
+
+# schedule()
+Just like step 6 in A2, we will traverse the sleeping list from the beginning, and compare
+a thread's wake up time and current ticks to determine if the thread should be waked up or not.
+Since sleeping list is sorted using wake up time, a thread could not be waked up if its previous
+thread is still sleeping. In this case, the average running time is O(1)
+
+The original way in pintos is different with our methods, since the running time of timer_sleep()
+is O(1) and schedule()'s is O(n). But schedule() is called much more frequently then timer_sleep().
+So we minimize the amount of time spent.
+
+
+---- SYNCHRONIZATION ----
+
+>> A4: How are race conditions avoided when multiple threads call
+>> timer_sleep() simultaneously?
+
+Before adding a thread into sleeping list, we disable the interrupt, and enable it after inserting.
+In this way, race conditions could be avoided.
+
+>> A5: How are race conditions avoided when a timer interrupt occurs
+>> during a call to timer_sleep()?
+
+Since we disable the interrupt in timer_sleep(), so timer interrupt could be avoided.
+
+---- RATIONALE ----
+
+>> A6: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+Just like the analysis in A3, we will traverse the sleeping list from the beginning, and compare
+a thread's wake up time and current ticks to determine if the thread should be waked up or not.
+Since sleeping list is sorted using wake up time, a thread could not be waked up if its previous
+thread is still sleeping. In this case, the average running time is O(1).
+
+The original way in pintos is different with our methods, since the running time of timer_sleep()
+is O(1) and schedule()'s is O(n). But schedule() is called much more frequently then timer_sleep().
+So we minimize the amount of time spent.
+
+
+			 PRIORITY SCHEDULING
+			 ===================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+## thread.h
+/* the original priority when the thread is created */
+int original_priority;
+
+/* the lock which the thread is waiting for */
+struct lock *waiting_lock;
+
+/* a list of locks which the current thread is holding */
+struct list holding_locks;
+
+## synch.h
+/* the initial priority (-1) or donation priority */
+int lock_priority;
+
+/* list element */
+struct list_elem elem;
+
+>> B2: Explain the data structure used to track priority donation.
+>> Use ASCII art to diagram a nested donation.  (Alternately, submit a
+>> .png file.)
+
+to see png file.
+
+---- ALGORITHMS ----
+
+>> B3: How do you ensure that the highest priority thread waiting for
+>> a lock, semaphore, or condition variable wakes up first?
+
+## lock and semaphore
+For these two, when a new thread comes, we just append it at the end of waiting
+list in sema_down(). When sema_up() is called, we traverse the list to find the
+thread with highest priority. (In our solution, the compare_priority function
+returns [b < a], so we need to call list_min instead of list_max to get max value.)
+
+## condition variable
+When we add a new thread into the waiting list of condition, we insert
+it in priority descending order. In other word, we maintain a sorted list
+by priority. In this list, the threads in front have higher priorities than
+the ones behind. When cond_signal() is called, we just need to pop the first
+thread in the list.
+
+So we could ensure the thread with highest priority wakes up first.
+
+
+>> B4: Describe the sequence of events when a call to lock_acquire()
+>> causes a priority donation.  How is nested donation handled?
+
+# lock_acquire()
+1. checks if the acquired lock exists and is held by current thread
+2. checks if the acquired lock is held by another thread. If not, Set the lock's holder
+   to current thread, and add the lock into the holding locks list of current thread.
+   Meanwhile, we need to call sema_down() to make this lock unavailable anymore.
+3. if the acquired lock has a holder, we need to claim the lock is the one current thread
+   is waiting for, and compare the priorities between current thread and the lock's holder.
+   If (lock->holder->priority < thread_current()->priority), we need to donate current thread's
+   priority to the holder.
+4. if there is a nested donation situation, handle it. See #nested donation part.
+5. calls sema_down, add the current thread into the lock's waiting list.
+
+# nested donation
+Just like the image in B2, in such a situation, we need to handle nested donation. We mainly
+use two variables, holder in lock struct and waiting_lock in thread struct. If the lock's
+holder's priority is lower than current one's, donate current one's to the holder of the acquired
+lock. Then we regard the holder as current thread and (holder->waiting_lock->holder) as new holder,
+and do the same process for this new pair. In this recursive way, we could handle unlimited nested
+donation.
+
+
+>> B5: Describe the sequence of events when lock_release() is called
+>> on a lock that a higher-priority thread is waiting for.
+
+# lock_release()
+1. removes the lock from its holder's holding lock list.
+2. since the holder's priority maybe donated by other threads, so we need to set a new priority
+   to it. If the holder is still holding other locks, get the highest priority from the list, and
+   if the highest priority is greater than holder's original priority, then set the holder's priority
+   with the highest one. Otherwise (no more holding locks or highest one < original), set the holder's
+   priority to its original one.
+3. sets the lock's holder to NULL
+4. calls sema_up() to unlock the thread with highest priority in the locks waiting list.
+ 
+
+---- SYNCHRONIZATION ----
+
+>> B6: Describe a potential race in thread_set_priority() and explain
+>> how your implementation avoids it.  Can you use a lock to avoid
+>> this race?
+
+# example situation
+1. the priority of a thread is 30.
+2. we try to call thread_set_priority() to set it's priority to 40.
+3. After checking and just before change the thread's priority value, we call thread_set_priority()
+   again to set it's priority to 50. The first function call is interrupted, and set the thread's
+   priority to 50.
+4. After switching back to the first function call, the priority value is set to 40.
+
+This is a race condition situation, even we want to set a thread's priority to 40 and then 50, at last,
+the priority is 40.
+
+We could use a lock to avoid this race I think. When we call thread_set_priority(), we acquire a lock
+so that no other function calls come. After setting the new priority, we release the lock, and allow
+other function calls to set a new priority. But this method is much more complicated than disable / enable
+interrupt.
+
+
+---- RATIONALE ----
+
+>> B7: Why did you choose this design?  In what ways is it superior to
+>> another design you considered?
+
+We tried a different design at first, but it was very complicated to handle nested donation, especially
+in lock_acquire() function. Then we decided to use a new way (B4) to handle it. In our solution, we add a
+priority field in lock struct, and use waiting_lock, holding_locks and holder (in lock struct) to trace the
+nested donation situation. In this way, we could handle nested donation easily. So we think this way is
+superior than the previous one we considered.
+
+			   SURVEY QUESTIONS
+			   ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+not very hard, but we still need to spent lots of time on reading docs and debuging.
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+definitely, we learnt a lot about locks, semaphore and condition variable, and also
+understood how to handle nested donation.
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
