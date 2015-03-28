@@ -1,0 +1,2 @@
+FAIL
+First line of output is not `(mmap-unmap) begin' message.
